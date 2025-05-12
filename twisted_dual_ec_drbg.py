@@ -42,6 +42,9 @@ key = (bd1, bd2)
 
 param = (curve1, curve2, d, P1, P2, Q1, Q2)
 
+print (hex(p-xP2))
+print (hex(p-xQ2))
+
 # Twisted Dual EC DRBG
 def twisted_dual_ec_drbg (param, seed, length):
 
@@ -72,45 +75,62 @@ def twisted_dual_ec_drbg (param, seed, length):
 
 # Need to implement correctly
 def backdoor_predictor (param, key, bits, length):
-    if len (bits) >= 256:
-        bd1, bd2 = key
-        curve1, curve2, d, _, _, _, _ = param
-        p = curve1.field.p
-        # First 256 bits of the DBRG output
-        r1 = int (bits [:256], 2)
-        point1 = ecfunc.find_point_from_x(curve1, r1)
-        point2 = ecfunc.find_point_from_x(curve2, (r1 * d) % p)
-        print (point1 == None, point2 == None)
+    chunks = len(bits) // 384
+    bd1, bd2 = key
+    curve1, curve2, d, _, _, _, _ = param
+    p = curve1.field.p
+    for i in range (chunks - 2):
+        # Chunk of 384 bits of the DBRG output
+        r = int (bits [384*i:384*(i+1)], 2)
+        point1 = ecfunc.find_point_from_x(curve1, r)
+        point2 = ecfunc.find_point_from_x(curve2, (r * d) % p)
         if point1 != None:
-            s2 = (bd1 * point1).x
+            s = (bd1 * point1).x
         elif point2 != None:
-            s2 = ((bd2 * point2).x * pow (d, -1, p)) % p
+            s = ((bd2 * point2).x * pow (d, -1, p)) % p
         else:
-            # This should not happen if curve2 is a twist of curve1
-            return None
+            return None # This should not happen if curve2 is a twist of curve1
             
-        # The state s2 has been uncovered
-        # Generating the next 256 bits
-        if format(s2, '0256b') [255] == '0':
-            r2 = (s2*Q1).x
-        else:
-            r2 = ((s2*Q2).x * pow (d, -1, p)) % p
+        # We have a guess s of the secret state
 
-        if length >= 512:
-            return bits[:256] + format(r2, '0256b') + twisted_dual_ec_drbg (param, s2, length-512)
+        a, b = format(s, '0384b') [382:384]
+
+        # Compute the corresponding guess for the next 384 bits of the output, and check against the actual output
+        if a == '0':
+            s = (s*P1).x
         else:
-            return (bits[:256] + format(r2, '0256b'))[:length]
+            s = ((s*P2).x * pow (d, -1, p)) % p
+
+        if b == '0':
+            r = (s*Q1).x
+        else:
+            r = ((s*Q2).x * pow (d, -1, p)) % p
+        
+        if format(r, '0384b') == bits[384*(i+2):384*(i+3)]:
+            # If they match, the state guess was correct, and we can determine the rest of the DRBG output by running the DRBG on the uncovered state.
+            return bits[:384*(i+3)] + twisted_dual_ec_drbg (param, s, length-384*(i+3))
     else:
         return None
 
-# Example
-seed = random.randint(1,2**384)
-print ("Seed: " + str(seed))
-random_bits = twisted_dual_ec_drbg (param, seed, 10000)
-print ("DRBG:      " + random_bits)
+# Example: Generate 10000 bits using the DRBG, feed the first 3840 to an adversary with the backdoor (repeat 20 times)
 
-"""
-prediction = backdoor_predictor (param, key, random_bits[:3840], 10000) # should be the same as random_bits with high probability, else None
-print ("Predictor: " + prediction)
-print (random_bits == prediction)
-"""
+output_length = 10000
+bits_given_to_predictor = 3840
+
+for _ in range (20):
+
+    seed = random.randint(1,2**384)
+    print ("Seed: " + str(seed))
+    random_bits = twisted_dual_ec_drbg (param, seed, output_length)
+    print ("DRBG:      " + random_bits)
+
+    prediction = backdoor_predictor (param, key, random_bits[:bits_given_to_predictor], output_length)
+    # should be the same as random_bits with high probability, else None
+    if prediction != None:
+        print ("Predictor: " + prediction)
+        if random_bits == prediction:
+            print ("Predictor used first " + str(bits_given_to_predictor) + " bits of the output and the backdoor key to correctly predict all " + str(output_length) + " bits of the output.")
+        else:
+            print ("Predictor was wrong!") # should not happen
+    else:
+        print ("Got unlucky; predictor could not recover state.") # should happen with small probability
