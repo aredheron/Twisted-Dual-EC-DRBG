@@ -2,6 +2,7 @@ from tinyec import registry
 from tinyec.ec import Curve, Point
 import random
 import ecfunc
+import time
 
 # Get Secp384r1 curve
 curve1 = registry.get_curve("secp384r1")
@@ -58,18 +59,18 @@ def twisted_dual_ec_drbg (param, seed, length):
 
         a, b = format(s, '0384b') [382:384]
 
-        # update the state s
-        if a == '0':
-            s = (s*P1).x
-        else:
-            s = ((s*P2).x * pow (d, -1, p)) % p
-
         # compute the bits r of the random output
         if b == '0':
             r = (s*Q1).x
         else:
             r = ((s*Q2).x * pow (d, -1, p)) % p
         output += format(r, '0384b')
+
+        # update the state s
+        if a == '0':
+            s = (s*P1).x
+        else:
+            s = ((s*P2).x * pow (d, -1, p)) % p
 
     return output [:length]
 
@@ -108,7 +109,7 @@ def backdoor_predictor (param, key, bits, length):
         
         if format(r, '0384b') == bits[384*(i+2):384*(i+3)]:
             # If they match, the state guess was correct, and we can determine the rest of the DRBG output by running the DRBG on the uncovered state.
-            return bits[:384*(i+3)] + twisted_dual_ec_drbg (param, s, length-384*(i+3))
+            return bits[:384*(i+2)] + twisted_dual_ec_drbg (param, s, length-384*(i+2))
     else:
         return None
 
@@ -121,15 +122,18 @@ for _ in range (20):
 
     seed = random.randint(1,2**384)
     print ("Seed: " + str(seed))
+    start = time.time ()
     random_bits = twisted_dual_ec_drbg (param, seed, output_length)
     print ("DRBG:      " + random_bits)
+    print ("Generated " + str(output_length) + " bits in " + str(time.time () - start) + " seconds.")
 
+    start = time.time ()
     prediction = backdoor_predictor (param, key, random_bits[:bits_given_to_predictor], output_length)
     # should be the same as random_bits with high probability, else None
     if prediction != None:
         print ("Predictor: " + prediction)
         if random_bits == prediction:
-            print ("Predictor used first " + str(bits_given_to_predictor) + " bits of the output and the backdoor key to correctly predict all " + str(output_length) + " bits of the output.")
+            print ("Predictor used first " + str(bits_given_to_predictor) + " bits of the output and the backdoor key to correctly predict all " + str(output_length) + " bits of the output in " + str(time.time ()-start) + " seconds.")
         else:
             print ("Predictor was wrong!") # should not happen
     else:
